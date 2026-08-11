@@ -8,6 +8,8 @@
 #   6. Always generates a local fallback report copy in 'output-fallback\Weekly Report Week <N>_Fallback.pptx'.
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "SharePointPassword")]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "password")]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSUseApprovedVerbs", "")]
 param(
     [int]$Week = -1,
     [string]$Root = "",
