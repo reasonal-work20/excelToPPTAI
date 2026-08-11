@@ -229,30 +229,14 @@ function Open-ExcelWorkbookSafely($excel, [string]$filePath, [bool]$readOnly = $
 }
 
 function Get-ExcelWorksheetSafely($wb, $sheetTarget) {
-    if ($null -eq $wb) {
-        Write-LogWarn "DEBUG: Get-ExcelWorksheetSafely received a NULL workbook object."
-        return $null
-    }
+    if ($null -eq $wb) { return $null }
 
-    # Wait up to 3 seconds for Worksheets collection to be accessible
+    # Wait up to 3 seconds for Worksheets collection to be accessible over web stream
     for ($attempt = 1; $attempt -le 6; $attempt++) {
         try {
             if ($null -ne $wb.Worksheets -and $wb.Worksheets.Count -gt 0) { break }
         } catch {}
         Start-Sleep -Milliseconds 500
-    }
-
-    # Log all available worksheets in the workbook for diagnostics
-    $sheetNames = @()
-    try {
-        foreach ($s in $wb.Worksheets) {
-            if ($null -ne $s -and $null -ne $s.Name) {
-                $sheetNames += $s.Name
-            }
-        }
-        Write-LogOk ("DEBUG: Workbook '{0}' contains {1} worksheet(s): [{2}]" -f $wb.Name, $sheetNames.Count, ($sheetNames -join ", "))
-    } catch {
-        Write-LogWarn ("DEBUG: Unable to enumerate worksheet names: {0}" -f $_.Exception.Message)
     }
 
     if ($null -eq $sheetTarget -or "$sheetTarget" -eq "") { $sheetTarget = 1 }
@@ -262,7 +246,6 @@ function Get-ExcelWorksheetSafely($wb, $sheetTarget) {
     try {
         foreach ($ws in $wb.Worksheets) {
             if ($null -ne $ws -and $ws.Name -eq $targetStr) {
-                Write-LogOk ("DEBUG: Matched worksheet by exact name: '{0}'" -f $ws.Name)
                 return $ws
             }
         }
@@ -275,7 +258,6 @@ function Get-ExcelWorksheetSafely($wb, $sheetTarget) {
             $currIdx = 1
             foreach ($ws in $wb.Worksheets) {
                 if ($currIdx -eq $targetIdx -and $null -ne $ws) {
-                    Write-LogOk ("DEBUG: Matched worksheet by 1-based index {0}: '{1}'" -f $targetIdx, $ws.Name)
                     return $ws
                 }
                 $currIdx++
@@ -284,32 +266,22 @@ function Get-ExcelWorksheetSafely($wb, $sheetTarget) {
 
         try {
             $ws = $wb.Worksheets.Item($targetIdx)
-            if ($null -ne $ws) {
-                Write-LogOk ("DEBUG: Matched worksheet via Worksheets.Item({0}): '{1}'" -f $targetIdx, $ws.Name)
-                return $ws
-            }
+            if ($null -ne $ws) { return $ws }
         } catch {}
     }
 
     # Strategy 3: Fallback to the first worksheet in the workbook
     try {
         foreach ($ws in $wb.Worksheets) {
-            if ($null -ne $ws) {
-                Write-LogWarn ("DEBUG: Target worksheet '{0}' not found by name/index. Falling back to 1st worksheet: '{1}'" -f $sheetTarget, $ws.Name)
-                return $ws
-            }
+            if ($null -ne $ws) { return $ws }
         }
     } catch {}
 
     # Strategy 4: Fallback to ActiveSheet
     try {
-        if ($null -ne $wb.ActiveSheet) {
-            Write-LogWarn ("DEBUG: Falling back to ActiveSheet: '{0}'" -f $wb.ActiveSheet.Name)
-            return $wb.ActiveSheet
-        }
+        if ($null -ne $wb.ActiveSheet) { return $wb.ActiveSheet }
     } catch {}
 
-    Write-LogError ("DEBUG: Unable to resolve any worksheet in workbook for target '{0}'" -f $sheetTarget)
     return $null
 }
 
