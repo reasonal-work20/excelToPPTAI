@@ -198,7 +198,7 @@ function Open-ExcelWorkbookSafely($excel, [string]$filePath, [bool]$readOnly = $
 
     # Unprotect Protected View windows (common on client machines opening web/SharePoint URLs)
     try {
-        if (-not $wb -and $null -ne $excel.ProtectedViewWindows -and $excel.ProtectedViewWindows.Count -gt 0) {
+        if ($null -ne $excel.ProtectedViewWindows -and $excel.ProtectedViewWindows.Count -gt 0) {
             foreach ($pvWin in $excel.ProtectedViewWindows) {
                 if ($null -ne $pvWin) {
                     $wb = try { $pvWin.Edit() } catch { $null }
@@ -208,6 +208,22 @@ function Open-ExcelWorkbookSafely($excel, [string]$filePath, [bool]$readOnly = $
         }
     } catch {}
 
+    if ($null -eq $wb -and $null -ne $excel.ActiveWorkbook) {
+        $wb = $excel.ActiveWorkbook
+    }
+
+    # Wait up to 5 seconds for web-streamed SharePoint workbooks to finish initializing sheets
+    if ($null -ne $wb) {
+        for ($wait = 1; $wait -le 10; $wait++) {
+            try {
+                if ($null -ne $wb.Worksheets -and $wb.Worksheets.Count -gt 0) {
+                    break
+                }
+            } catch {}
+            Start-Sleep -Milliseconds 500
+        }
+    }
+
     try { $excel.DisplayAlerts = $false } catch {}
     return $wb
 }
@@ -216,6 +232,14 @@ function Get-ExcelWorksheetSafely($wb, $sheetTarget) {
     if ($null -eq $wb) {
         Write-LogWarn "DEBUG: Get-ExcelWorksheetSafely received a NULL workbook object."
         return $null
+    }
+
+    # Wait up to 3 seconds for Worksheets collection to be accessible
+    for ($attempt = 1; $attempt -le 6; $attempt++) {
+        try {
+            if ($null -ne $wb.Worksheets -and $wb.Worksheets.Count -gt 0) { break }
+        } catch {}
+        Start-Sleep -Milliseconds 500
     }
 
     # Log all available worksheets in the workbook for diagnostics
@@ -274,6 +298,14 @@ function Get-ExcelWorksheetSafely($wb, $sheetTarget) {
                 Write-LogWarn ("DEBUG: Target worksheet '{0}' not found by name/index. Falling back to 1st worksheet: '{1}'" -f $sheetTarget, $ws.Name)
                 return $ws
             }
+        }
+    } catch {}
+
+    # Strategy 4: Fallback to ActiveSheet
+    try {
+        if ($null -ne $wb.ActiveSheet) {
+            Write-LogWarn ("DEBUG: Falling back to ActiveSheet: '{0}'" -f $wb.ActiveSheet.Name)
+            return $wb.ActiveSheet
         }
     } catch {}
 
