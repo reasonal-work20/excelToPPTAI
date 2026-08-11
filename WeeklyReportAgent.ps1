@@ -24,6 +24,7 @@ param(
     [string]$ClientId = "",
     [string]$TenantId = "",
     [string]$CertThumbprint = "",
+    [switch]$UsePnP,
     [switch]$NoDateUpdate
 )
 
@@ -215,6 +216,100 @@ function Get-GraphAccessTokenFromCert([string]$clientId, [string]$tenantId, [str
     return $response.access_token
 }
 
+# --- PnP PowerShell & Interactive MFA Authentication Helpers ------------------
+function Get-PnPSharePointFile([string]$urlToFetch, [string]$destPath, [string]$tenantId, [string]$clientId) {
+    if (-not (Get-Command Connect-PnPOnline -ErrorAction SilentlyContinue)) {
+        return $false
+    }
+    try {
+        $uri = [Uri]$urlToFetch
+        $siteUrl = "$($uri.Scheme)://$($uri.Host)"
+        $pathSegments = $uri.AbsolutePath.Trim('/').Split('/')
+        if ($pathSegments.Length -ge 2 -and ($pathSegments[0] -eq 'sites' -or $pathSegments[0] -eq 'teams')) {
+            $siteUrl = "$siteUrl/$($pathSegments[0])/$($pathSegments[1])"
+        }
+
+        Write-LogStep ("Authenticating with SharePoint via PnP PowerShell (MFA Interactive)...")
+        $pnpParams = @{ Url = $siteUrl; Interactive = $true }
+        if (-not [string]::IsNullOrWhiteSpace($tenantId)) { $pnpParams["Tenant"] = $tenantId }
+        if (-not [string]::IsNullOrWhiteSpace($clientId)) { $pnpParams["ClientId"] = $clientId }
+
+        Connect-PnPOnline @pnpParams -ErrorAction Stop
+        Write-LogOk "PnP PowerShell interactive authentication successful!"
+
+        $serverRelativeUrl = $uri.AbsolutePath
+        $targetFolder = Split-Path $destPath -Parent
+        $fileName = Split-Path $destPath -Leaf
+
+        Write-LogOk ("Downloading via PnP: {0}" -f $serverRelativeUrl)
+        Get-PnPFile -Url $serverRelativeUrl -Path $targetFolder -FileName $fileName -AsFile -Force -ErrorAction Stop
+
+        if ((Test-Path $destPath) -and (Get-Item $destPath).Length -gt 100) {
+            $bytes = [System.IO.File]::ReadAllBytes($destPath)
+            if ($bytes.Length -gt 4 -and $bytes[0] -eq 0x50 -and $bytes[1] -eq 0x4B) {
+                return $true
+            }
+        }
+    } catch {
+        Write-LogWarn ("PnP PowerShell download attempt failed: $_")
+    }
+    return $false
+}
+
+function Get-GraphAccessTokenInteractive([string]$tenantId, [string]$clientId) {
+    if ([string]::IsNullOrWhiteSpace($clientId)) {
+        $clientId = "31359c7f-bd7e-475c-86db-f28c4cfd6573" # Standard PnP / MS Graph App ID
+    }
+    $tenant = if ([string]::IsNullOrWhiteSpace($tenantId)) { "common" } else { $tenantId }
+
+    $codeUri = "https://login.microsoftonline.com/$tenant/oauth2/v2.0/devicecode"
+    $body = @{
+        client_id = $clientId
+        scope     = "https://graph.microsoft.com/Files.Read.All https://graph.microsoft.com/Sites.Read.All offline_access"
+    }
+
+    try {
+        $codeResp = Invoke-RestMethod -Method Post -Uri $codeUri -Body $body -ErrorAction Stop
+        Write-LogStep ("=" * 60)
+        Write-LogStep ("MICROSOFT MFA INTERACTIVE LOGIN REQUIRED:")
+        Write-LogStep ("1. Open Browser : {0}" -f $codeResp.verification_uri)
+        Write-LogStep ("2. Enter Code    : {0}" -f $codeResp.user_code)
+        Write-LogStep ("=" * 60)
+
+        try { [System.Diagnostics.Process]::Start($codeResp.verification_uri) } catch {}
+
+        $tokenUri = "https://login.microsoftonline.com/$tenant/oauth2/v2.0/token"
+        $interval = if ($codeResp.interval) { [int]$codeResp.interval } else { 5 }
+        $expiresIn = if ($codeResp.expires_in) { [int]$codeResp.expires_in } else { 900 }
+        $startTime = [DateTime]::UtcNow
+
+        while (([DateTime]::UtcNow - $startTime).TotalSeconds -lt $expiresIn) {
+            Start-Sleep -Seconds $interval
+            $tokenBody = @{
+                grant_type  = "urn:ietf:params:oauth:grant-type:device_code"
+                client_id   = $clientId
+                device_code = $codeResp.device_code
+            }
+            try {
+                $tokenResp = Invoke-RestMethod -Method Post -Uri $tokenUri -Body $tokenBody -ErrorAction Stop
+                if ($tokenResp.access_token) {
+                    Write-LogOk "MFA Interactive Authentication successful!"
+                    return $tokenResp.access_token
+                }
+            } catch {
+                if ($_ -match "authorization_pending") {
+                    continue
+                } else {
+                    break
+                }
+            }
+        }
+    } catch {
+        Write-LogWarn ("MS Graph Device Code MFA flow failed: $_")
+    }
+    return $null
+}
+
 # --- Mandatory 4-Excel File Check ---------------------------------------------
 function Test-MandatoryExcelFiles() {
     Write-LogStep "[1/5] Checking required Excel input files"
@@ -226,8 +321,7 @@ function Test-MandatoryExcelFiles() {
             Write-LogError ("Missing: {0}" -f $file)
             $missingFiles += $file
         } elseif ($resolved -match '^https?://') {
-            Write-LogError ("Download Failed: {0} (URL: {1})" -f $file, $resolved)
-            $missingFiles += ("{0} [Failed download from SharePoint URL: {1}]" -f $file, $resolved)
+            Write-LogOk ("{0} -> SharePoint URL (Will open directly in Excel COM)" -f $file)
         } elseif (-not (Test-Path $resolved -PathType Leaf)) {
             Write-LogError ("Missing: {0}" -f $file)
             $missingFiles += $file
@@ -238,7 +332,7 @@ function Test-MandatoryExcelFiles() {
 
     if ($missingFiles.Count -gt 0) {
         $missingList = $missingFiles -join ", "
-        throw "Failed to gather data from the source: Could not obtain local Excel file(s): [$missingList]. All 4 required Excel files must exist locally or be successfully downloaded before processing. If connecting to a different tenant, verify Tenant ID, credentials, or App Registration permissions."
+        throw "Failed to gather data from the source: Missing required Excel file(s): [$missingList]. All 4 required Excel files must exist locally or have valid SharePoint URLs."
     }
 }
 
@@ -762,17 +856,30 @@ try {
             $urlToFetch = if ($sourceVal -match '\.xlsx$') { $sourceVal } else { "$($sourceVal.TrimEnd('/'))/$reqFile" }
 
             $downloaded = $false
-            try {
-                Invoke-WebRequest -Uri "$urlToFetch`?download=1" -OutFile $destPath -UseDefaultCredentials -UseBasicParsing -ErrorAction Stop
-                if ((Test-Path $destPath) -and (Get-Item $destPath).Length -gt 100) {
-                    $bytes = [System.IO.File]::ReadAllBytes($destPath)
-                    if ($bytes.Length -gt 4 -and $bytes[0] -eq 0x50 -and $bytes[1] -eq 0x4B) {
-                        $script:ResolvedExcelPaths[$reqFile] = $destPath
-                        $downloaded = $true
-                    }
-                }
-            } catch {}
 
+            # Strategy 1: PnP PowerShell (Connect-PnPOnline -Interactive for MFA)
+            if ($UsePnP -or (Get-Command Connect-PnPOnline -ErrorAction SilentlyContinue)) {
+                $downloaded = Get-PnPSharePointFile -urlToFetch $urlToFetch -destPath $destPath -tenantId $TenantId -clientId $ClientId
+                if ($downloaded) {
+                    $script:ResolvedExcelPaths[$reqFile] = $destPath
+                }
+            }
+
+            # Strategy 2: Direct Invoke-WebRequest with Default Credentials (Domain SSO)
+            if (-not $downloaded) {
+                try {
+                    Invoke-WebRequest -Uri "$urlToFetch`?download=1" -OutFile $destPath -UseDefaultCredentials -UseBasicParsing -ErrorAction Stop
+                    if ((Test-Path $destPath) -and (Get-Item $destPath).Length -gt 100) {
+                        $bytes = [System.IO.File]::ReadAllBytes($destPath)
+                        if ($bytes.Length -gt 4 -and $bytes[0] -eq 0x50 -and $bytes[1] -eq 0x4B) {
+                            $script:ResolvedExcelPaths[$reqFile] = $destPath
+                            $downloaded = $true
+                        }
+                    }
+                } catch {}
+            }
+
+            # Strategy 3: Graph API via App Registration Certificate (Non-interactive)
             if (-not $downloaded -and $CertThumbprint -and $ClientId -and $TenantId) {
                 try {
                     $token = Get-GraphAccessTokenFromCert -clientId $ClientId -tenantId $TenantId -certThumbprint $CertThumbprint -rootPath $scriptExecutionDir
@@ -781,6 +888,20 @@ try {
                     Invoke-WebRequest -Uri $itemUri -OutFile $destPath -Headers @{ Authorization = "Bearer $token" } -UseBasicParsing -ErrorAction Stop
                     $script:ResolvedExcelPaths[$reqFile] = $destPath
                     $downloaded = $true
+                } catch {}
+            }
+
+            # Strategy 4: MS Graph Interactive / Device Code Flow (MFA Interactive without PnP module)
+            if (-not $downloaded) {
+                try {
+                    $mfaToken = Get-GraphAccessTokenInteractive -tenantId $TenantId -clientId $ClientId
+                    if ($mfaToken) {
+                        $sharingToken = Get-GraphSharingToken $urlToFetch
+                        $itemUri = "https://graph.microsoft.com/v1.0/shares/${sharingToken}/driveItem:/content"
+                        Invoke-WebRequest -Uri $itemUri -OutFile $destPath -Headers @{ Authorization = "Bearer $mfaToken" } -UseBasicParsing -ErrorAction Stop
+                        $script:ResolvedExcelPaths[$reqFile] = $destPath
+                        $downloaded = $true
+                    }
                 } catch {}
             }
 
@@ -837,15 +958,17 @@ try {
         $ltiPath = $script:ResolvedExcelPaths[$cfgLti.FileName]
         if (-not $ltiPath) { $ltiPath = Join-Path $workingRoot $cfgLti.FileName }
         if ($ltiPath -match '^https?://') {
-            throw "Failed to process '$($cfgLti.FileName)': File URL '$ltiPath' could not be downloaded from SharePoint. Please check Tenant ID, App Registration permissions, or credentials for the target tenant."
-        }
-        if (-not (Test-Path $ltiPath -PathType Leaf)) {
-            throw "Excel file '$($cfgLti.FileName)' not found at '$ltiPath'."
+            Write-LogStep ("Opening SharePoint URL directly in Excel: {0}" -f $ltiPath)
+            try { $excel.DisplayAlerts = $true } catch {}
+            try { $excel.Visible = $true } catch {}
+        } elseif (-not (Test-Path $ltiPath -PathType Leaf)) {
+            throw "Excel file '$($cfgLti.FileName)' not found at local path '$ltiPath'."
         }
         Write-LogOk ("Processing {0}..." -f $cfgLti.FileName)
         $wb1 = try { $excel.Workbooks.Open($ltiPath, $false, $false) } catch { $null }
+        try { $excel.DisplayAlerts = $false } catch {}
         if (-not $wb1) {
-            throw "Failed to open Excel workbook '$ltiPath'. The file may be corrupt, password-protected, or locked by another process."
+            throw "Failed to open Excel workbook '$ltiPath'. If accessing a SharePoint URL, please ensure Excel is signed into your M365 account, or download the required Excel file locally."
         }
         $ws1 = try { $wb1.Worksheets.Item($cfgLti.Worksheet) } catch { $null }
         if (-not $ws1) {
@@ -890,15 +1013,17 @@ try {
         $movesPath = $script:ResolvedExcelPaths[$cfgMoves.FileName]
         if (-not $movesPath) { $movesPath = Join-Path $workingRoot $cfgMoves.FileName }
         if ($movesPath -match '^https?://') {
-            throw "Failed to process '$($cfgMoves.FileName)': File URL '$movesPath' could not be downloaded from SharePoint. Please check Tenant ID, App Registration permissions, or credentials for the target tenant."
-        }
-        if (-not (Test-Path $movesPath -PathType Leaf)) {
-            throw "Excel file '$($cfgMoves.FileName)' not found at '$movesPath'."
+            Write-LogStep ("Opening SharePoint URL directly in Excel: {0}" -f $movesPath)
+            try { $excel.DisplayAlerts = $true } catch {}
+            try { $excel.Visible = $true } catch {}
+        } elseif (-not (Test-Path $movesPath -PathType Leaf)) {
+            throw "Excel file '$($cfgMoves.FileName)' not found at local path '$movesPath'."
         }
         Write-LogOk ("Processing {0}..." -f $cfgMoves.FileName)
         $wb2 = try { $excel.Workbooks.Open($movesPath, $false, $false) } catch { $null }
+        try { $excel.DisplayAlerts = $false } catch {}
         if (-not $wb2) {
-            throw "Failed to open Excel workbook '$movesPath'. The file may be corrupt, password-protected, or locked by another process."
+            throw "Failed to open Excel workbook '$movesPath'. If accessing a SharePoint URL, please ensure Excel is signed into your M365 account, or download the required Excel file locally."
         }
         $ws2 = try { $wb2.Worksheets.Item($cfgMoves.Worksheet) } catch { $null }
         if (-not $ws2) {
@@ -945,15 +1070,17 @@ try {
         $cmphPath = $script:ResolvedExcelPaths[$cfgPmph.FileName]
         if (-not $cmphPath) { $cmphPath = Join-Path $workingRoot $cfgPmph.FileName }
         if ($cmphPath -match '^https?://') {
-            throw "Failed to process '$($cfgPmph.FileName)': File URL '$cmphPath' could not be downloaded from SharePoint. Please check Tenant ID, App Registration permissions, or credentials for the target tenant."
-        }
-        if (-not (Test-Path $cmphPath -PathType Leaf)) {
-            throw "Excel file '$($cfgPmph.FileName)' not found at '$cmphPath'."
+            Write-LogStep ("Opening SharePoint URL directly in Excel: {0}" -f $cmphPath)
+            try { $excel.DisplayAlerts = $true } catch {}
+            try { $excel.Visible = $true } catch {}
+        } elseif (-not (Test-Path $cmphPath -PathType Leaf)) {
+            throw "Excel file '$($cfgPmph.FileName)' not found at local path '$cmphPath'."
         }
         Write-LogOk ("Processing {0}..." -f $cfgPmph.FileName)
         $wb3 = try { $excel.Workbooks.Open($cmphPath, $false, $false) } catch { $null }
+        try { $excel.DisplayAlerts = $false } catch {}
         if (-not $wb3) {
-            throw "Failed to open Excel workbook '$cmphPath'. The file may be corrupt, password-protected, or locked by another process."
+            throw "Failed to open Excel workbook '$cmphPath'. If accessing a SharePoint URL, please ensure Excel is signed into your M365 account, or download the required Excel file locally."
         }
         $ws3 = try { $wb3.Worksheets.Item($cfgPmph.Worksheet) } catch { $null }
         if (-not $ws3) {
@@ -1050,15 +1177,17 @@ try {
         $equipPath = $script:ResolvedExcelPaths[$cfgAct.FileName]
         if (-not $equipPath) { $equipPath = Join-Path $workingRoot $cfgAct.FileName }
         if ($equipPath -match '^https?://') {
-            throw "Failed to process '$($cfgAct.FileName)': File is a SharePoint URL ($equipPath) and was not downloaded locally. Please verify Tenant ID, credentials, or App Registration permissions for the target tenant."
-        }
-        if (-not (Test-Path $equipPath -PathType Leaf)) {
-            throw "Excel file '$($cfgAct.FileName)' not found at '$equipPath'."
+            Write-LogStep ("Opening SharePoint URL directly in Excel: {0}" -f $equipPath)
+            try { $excel.DisplayAlerts = $true } catch {}
+            try { $excel.Visible = $true } catch {}
+        } elseif (-not (Test-Path $equipPath -PathType Leaf)) {
+            throw "Excel file '$($cfgAct.FileName)' not found at local path '$equipPath'."
         }
         Write-LogOk ("Processing {0}..." -f $cfgAct.FileName)
         $wb4 = try { $excel.Workbooks.Open($equipPath, $false, $true) } catch { $null }
+        try { $excel.DisplayAlerts = $false } catch {}
         if (-not $wb4) {
-            throw "Failed to open Excel workbook '$equipPath'. The file may be corrupt, password-protected, or locked by another process."
+            throw "Failed to open Excel workbook '$equipPath'. If accessing a SharePoint URL, please ensure Excel is signed into your M365 account, or download the required Excel file locally."
         }
 
         # SLIDE 5: Weekly SMT sheet - screenshot Equipment Technical Availability section

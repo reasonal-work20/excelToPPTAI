@@ -431,6 +431,21 @@ $btnRun.Add_Click({
                 $argList += "-SharePointEmail"
                 $argList += (Format-PsArg $config.SharePointEmail)
             }
+            if ($config.ClientId) {
+                $argList += "-ClientId"
+                $argList += (Format-PsArg $config.ClientId)
+            }
+            if ($config.TenantId) {
+                $argList += "-TenantId"
+                $argList += (Format-PsArg $config.TenantId)
+            }
+            if ($config.CertThumbprint) {
+                $argList += "-CertThumbprint"
+                $argList += (Format-PsArg $config.CertThumbprint)
+            }
+            if (Get-Command Connect-PnPOnline -ErrorAction SilentlyContinue) {
+                $argList += "-UsePnP"
+            }
 
             # Use a temp log file for capturing agent output.
             # Rationale: BeginOutputReadLine/BeginErrorReadLine fire on thread-pool threads.
