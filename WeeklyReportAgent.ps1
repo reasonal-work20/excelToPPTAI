@@ -213,41 +213,71 @@ function Open-ExcelWorkbookSafely($excel, [string]$filePath, [bool]$readOnly = $
 }
 
 function Get-ExcelWorksheetSafely($wb, $sheetTarget) {
-    if ($null -eq $wb) { return $null }
+    if ($null -eq $wb) {
+        Write-LogWarn "DEBUG: Get-ExcelWorksheetSafely received a NULL workbook object."
+        return $null
+    }
+
+    # Log all available worksheets in the workbook for diagnostics
+    $sheetNames = @()
+    try {
+        foreach ($s in $wb.Worksheets) {
+            if ($null -ne $s -and $null -ne $s.Name) {
+                $sheetNames += $s.Name
+            }
+        }
+        Write-LogOk ("DEBUG: Workbook '{0}' contains {1} worksheet(s): [{2}]" -f $wb.Name, $sheetNames.Count, ($sheetNames -join ", "))
+    } catch {
+        Write-LogWarn ("DEBUG: Unable to enumerate worksheet names: {0}" -f $_.Exception.Message)
+    }
 
     if ($null -eq $sheetTarget -or "$sheetTarget" -eq "") { $sheetTarget = 1 }
+    $targetStr = "$sheetTarget"
 
-    if ("$sheetTarget" -match '^\d+$') {
-        $idx = [int]$sheetTarget
+    # Strategy 1: Match by exact string name
+    try {
+        foreach ($ws in $wb.Worksheets) {
+            if ($null -ne $ws -and $ws.Name -eq $targetStr) {
+                Write-LogOk ("DEBUG: Matched worksheet by exact name: '{0}'" -f $ws.Name)
+                return $ws
+            }
+        }
+    } catch {}
+
+    # Strategy 2: Match by 1-based index via enumeration if sheetTarget is numeric
+    if ($targetStr -match '^\d+$') {
+        $targetIdx = [int]$targetStr
         try {
-            $ws = $wb.Worksheets.Item($idx)
-            if ($null -ne $ws) { return $ws }
+            $currIdx = 1
+            foreach ($ws in $wb.Worksheets) {
+                if ($currIdx -eq $targetIdx -and $null -ne $ws) {
+                    Write-LogOk ("DEBUG: Matched worksheet by 1-based index {0}: '{1}'" -f $targetIdx, $ws.Name)
+                    return $ws
+                }
+                $currIdx++
+            }
         } catch {}
+
         try {
-            $ws = $wb.Sheets.Item($idx)
-            if ($null -ne $ws) { return $ws }
+            $ws = $wb.Worksheets.Item($targetIdx)
+            if ($null -ne $ws) {
+                Write-LogOk ("DEBUG: Matched worksheet via Worksheets.Item({0}): '{1}'" -f $targetIdx, $ws.Name)
+                return $ws
+            }
         } catch {}
     }
 
-    $name = [string]$sheetTarget
+    # Strategy 3: Fallback to the first worksheet in the workbook
     try {
-        $ws = $wb.Worksheets.Item($name)
-        if ($null -ne $ws) { return $ws }
-    } catch {}
-    try {
-        $ws = $wb.Sheets.Item($name)
-        if ($null -ne $ws) { return $ws }
-    } catch {}
-
-    try {
-        $ws = $wb.Worksheets.Item(1)
-        if ($null -ne $ws) { return $ws }
-    } catch {}
-    try {
-        $ws = $wb.Sheets.Item(1)
-        if ($null -ne $ws) { return $ws }
+        foreach ($ws in $wb.Worksheets) {
+            if ($null -ne $ws) {
+                Write-LogWarn ("DEBUG: Target worksheet '{0}' not found by name/index. Falling back to 1st worksheet: '{1}'" -f $sheetTarget, $ws.Name)
+                return $ws
+            }
+        }
     } catch {}
 
+    Write-LogError ("DEBUG: Unable to resolve any worksheet in workbook for target '{0}'" -f $sheetTarget)
     return $null
 }
 
