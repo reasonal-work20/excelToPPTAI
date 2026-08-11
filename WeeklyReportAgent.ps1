@@ -226,7 +226,8 @@ function Test-MandatoryExcelFiles() {
             Write-LogError ("Missing: {0}" -f $file)
             $missingFiles += $file
         } elseif ($resolved -match '^https?://') {
-            Write-LogOk ("{0} -> SharePoint URL" -f $file)
+            Write-LogError ("Download Failed: {0} (URL: {1})" -f $file, $resolved)
+            $missingFiles += ("{0} [Failed download from SharePoint URL: {1}]" -f $file, $resolved)
         } elseif (-not (Test-Path $resolved -PathType Leaf)) {
             Write-LogError ("Missing: {0}" -f $file)
             $missingFiles += $file
@@ -237,7 +238,7 @@ function Test-MandatoryExcelFiles() {
 
     if ($missingFiles.Count -gt 0) {
         $missingList = $missingFiles -join ", "
-        throw "Failed to gather data from the source: Missing required Excel file(s): [$missingList]. All 4 required Excel files must exist before processing."
+        throw "Failed to gather data from the source: Could not obtain local Excel file(s): [$missingList]. All 4 required Excel files must exist locally or be successfully downloaded before processing. If connecting to a different tenant, verify Tenant ID, credentials, or App Registration permissions."
     }
 }
 
@@ -832,11 +833,25 @@ try {
     try {
         # --- File 1: LTI PER TEU data.xlsx ---
         $cfgLti = $script:GraphConfig["Slide2_LTI"]
+        if (-not $cfgLti) { throw "Configuration 'Slide2_LTI' is missing in `$script:GraphConfig." }
         $ltiPath = $script:ResolvedExcelPaths[$cfgLti.FileName]
         if (-not $ltiPath) { $ltiPath = Join-Path $workingRoot $cfgLti.FileName }
+        if ($ltiPath -match '^https?://') {
+            throw "Failed to process '$($cfgLti.FileName)': File URL '$ltiPath' could not be downloaded from SharePoint. Please check Tenant ID, App Registration permissions, or credentials for the target tenant."
+        }
+        if (-not (Test-Path $ltiPath -PathType Leaf)) {
+            throw "Excel file '$($cfgLti.FileName)' not found at '$ltiPath'."
+        }
         Write-LogOk ("Processing {0}..." -f $cfgLti.FileName)
-        $wb1 = $excel.Workbooks.Open($ltiPath, $false, $false)
-        $ws1 = $wb1.Worksheets.Item($cfgLti.Worksheet)
+        $wb1 = try { $excel.Workbooks.Open($ltiPath, $false, $false) } catch { $null }
+        if (-not $wb1) {
+            throw "Failed to open Excel workbook '$ltiPath'. The file may be corrupt, password-protected, or locked by another process."
+        }
+        $ws1 = try { $wb1.Worksheets.Item($cfgLti.Worksheet) } catch { $null }
+        if (-not $ws1) {
+            $wb1.Close($false)
+            throw "Worksheet '$($cfgLti.Worksheet)' was not found in '$ltiPath'."
+        }
 
         $lastRow1 = 0
         for ($r = $cfgLti.MaxScanRow; $r -ge $cfgLti.MinRow; $r--) {
@@ -845,31 +860,51 @@ try {
         }
         if ($lastRow1 -gt 0) {
             $firstRow1 = [math]::Max($cfgLti.MinRow, $lastRow1 - $cfgLti.LookbackWeeks)
-            $cObj1 = $ws1.ChartObjects().Item($cfgLti.ChartIndex)
-            foreach ($s in $cObj1.Chart.SeriesCollection()) {
-                $newFormula = [regex]::Replace($s.Formula, '(\$[A-Z]+\$)\d+:(\$[A-Z]+\$)\d+',
-                    { param($m) $m.Groups[1].Value + $firstRow1 + ":" + $m.Groups[2].Value + $lastRow1 })
-                if ($newFormula -ne $s.Formula) { $s.Formula = $newFormula }
-            }
-            $wb1.Save()
-            $png1 = Join-Path $workingRoot "slide2_lti.png"
-            Export-ChartHd $cObj1 $png1 $cfgLti.Width $cfgLti.Height
-            if (Test-ValidImageFile $png1) {
-                $exportedCharts["Slide2_LTI"] = $png1
-                Write-LogOk ("Slide #2 LTI Chart exported to PNG")
+            $cObj1 = try { $ws1.ChartObjects().Item($cfgLti.ChartIndex) } catch { $null }
+            if (-not $cObj1) {
+                Write-LogWarn ("Chart index {0} not found on worksheet '{1}' in {2}" -f $cfgLti.ChartIndex, $cfgLti.Worksheet, $cfgLti.FileName)
             } else {
-                Write-LogWarn ("Slide #2 LTI Chart export failed or created invalid PNG")
+                foreach ($s in $cObj1.Chart.SeriesCollection()) {
+                    if ($null -ne $s -and $null -ne $s.Formula) {
+                        $newFormula = [regex]::Replace($s.Formula, '(\$[A-Z]+\$)\d+:(\$[A-Z]+\$)\d+',
+                            { param($m) $m.Groups[1].Value + $firstRow1 + ":" + $m.Groups[2].Value + $lastRow1 })
+                        if ($newFormula -ne $s.Formula) { $s.Formula = $newFormula }
+                    }
+                }
+                $wb1.Save()
+                $png1 = Join-Path $workingRoot "slide2_lti.png"
+                Export-ChartHd $cObj1 $png1 $cfgLti.Width $cfgLti.Height
+                if (Test-ValidImageFile $png1) {
+                    $exportedCharts["Slide2_LTI"] = $png1
+                    Write-LogOk ("Slide #2 LTI Chart exported to PNG")
+                } else {
+                    Write-LogWarn ("Slide #2 LTI Chart export failed or created invalid PNG")
+                }
             }
         }
         $wb1.Close($false)
 
         # --- File 2: Actual & Forecast Moves data.xlsx ---
         $cfgMoves = $script:GraphConfig["Slide3_Moves"]
+        if (-not $cfgMoves) { throw "Configuration 'Slide3_Moves' is missing in `$script:GraphConfig." }
         $movesPath = $script:ResolvedExcelPaths[$cfgMoves.FileName]
         if (-not $movesPath) { $movesPath = Join-Path $workingRoot $cfgMoves.FileName }
+        if ($movesPath -match '^https?://') {
+            throw "Failed to process '$($cfgMoves.FileName)': File URL '$movesPath' could not be downloaded from SharePoint. Please check Tenant ID, App Registration permissions, or credentials for the target tenant."
+        }
+        if (-not (Test-Path $movesPath -PathType Leaf)) {
+            throw "Excel file '$($cfgMoves.FileName)' not found at '$movesPath'."
+        }
         Write-LogOk ("Processing {0}..." -f $cfgMoves.FileName)
-        $wb2 = $excel.Workbooks.Open($movesPath, $false, $false)
-        $ws2 = $wb2.Worksheets.Item($cfgMoves.Worksheet)
+        $wb2 = try { $excel.Workbooks.Open($movesPath, $false, $false) } catch { $null }
+        if (-not $wb2) {
+            throw "Failed to open Excel workbook '$movesPath'. The file may be corrupt, password-protected, or locked by another process."
+        }
+        $ws2 = try { $wb2.Worksheets.Item($cfgMoves.Worksheet) } catch { $null }
+        if (-not $ws2) {
+            $wb2.Close($false)
+            throw "Worksheet '$($cfgMoves.Worksheet)' was not found in '$movesPath'."
+        }
 
         $lastRow2 = 0
         for ($r = $cfgMoves.MaxScanRow; $r -ge $cfgMoves.MinRow; $r--) {
@@ -878,20 +913,26 @@ try {
         }
         if ($lastRow2 -gt 0) {
             $firstRow2 = [math]::Max($cfgMoves.MinRow, $lastRow2 - $cfgMoves.LookbackWeeks)
-            $cObj2 = $ws2.ChartObjects().Item($cfgMoves.ChartIndex)
-            foreach ($s in $cObj2.Chart.SeriesCollection()) {
-                $newFormula = [regex]::Replace($s.Formula, '(\$[A-Z]+\$)\d+:(\$[A-Z]+\$)\d+',
-                    { param($m) $m.Groups[1].Value + $firstRow2 + ":" + $m.Groups[2].Value + $lastRow2 })
-                if ($newFormula -ne $s.Formula) { $s.Formula = $newFormula }
-            }
-            $wb2.Save()
-            $png2 = Join-Path $workingRoot "slide3_moves.png"
-            Export-ChartHd $cObj2 $png2 $cfgMoves.Width $cfgMoves.Height
-            if (Test-ValidImageFile $png2) {
-                $exportedCharts["Slide3_Moves"] = $png2
-                Write-LogOk ("Slide #3 Moves Chart exported to PNG")
+            $cObj2 = try { $ws2.ChartObjects().Item($cfgMoves.ChartIndex) } catch { $null }
+            if (-not $cObj2) {
+                Write-LogWarn ("Chart index {0} not found on worksheet '{1}' in {2}" -f $cfgMoves.ChartIndex, $cfgMoves.Worksheet, $cfgMoves.FileName)
             } else {
-                Write-LogWarn ("Slide #3 Moves Chart export failed or created invalid PNG")
+                foreach ($s in $cObj2.Chart.SeriesCollection()) {
+                    if ($null -ne $s -and $null -ne $s.Formula) {
+                        $newFormula = [regex]::Replace($s.Formula, '(\$[A-Z]+\$)\d+:(\$[A-Z]+\$)\d+',
+                            { param($m) $m.Groups[1].Value + $firstRow2 + ":" + $m.Groups[2].Value + $lastRow2 })
+                        if ($newFormula -ne $s.Formula) { $s.Formula = $newFormula }
+                    }
+                }
+                $wb2.Save()
+                $png2 = Join-Path $workingRoot "slide3_moves.png"
+                Export-ChartHd $cObj2 $png2 $cfgMoves.Width $cfgMoves.Height
+                if (Test-ValidImageFile $png2) {
+                    $exportedCharts["Slide3_Moves"] = $png2
+                    Write-LogOk ("Slide #3 Moves Chart exported to PNG")
+                } else {
+                    Write-LogWarn ("Slide #3 Moves Chart export failed or created invalid PNG")
+                }
             }
         }
         $wb2.Close($false)
@@ -899,11 +940,26 @@ try {
         # --- File 3: CMPH and PMPH actual and forecast data.xlsx ---
         $cfgPmph = $script:GraphConfig["Slide4_PMPH"]
         $cfgCmph = $script:GraphConfig["Slide4_CMPH"]
+        if (-not $cfgPmph) { throw "Configuration 'Slide4_PMPH' is missing in `$script:GraphConfig." }
+        if (-not $cfgCmph) { throw "Configuration 'Slide4_CMPH' is missing in `$script:GraphConfig." }
         $cmphPath = $script:ResolvedExcelPaths[$cfgPmph.FileName]
         if (-not $cmphPath) { $cmphPath = Join-Path $workingRoot $cfgPmph.FileName }
+        if ($cmphPath -match '^https?://') {
+            throw "Failed to process '$($cfgPmph.FileName)': File URL '$cmphPath' could not be downloaded from SharePoint. Please check Tenant ID, App Registration permissions, or credentials for the target tenant."
+        }
+        if (-not (Test-Path $cmphPath -PathType Leaf)) {
+            throw "Excel file '$($cfgPmph.FileName)' not found at '$cmphPath'."
+        }
         Write-LogOk ("Processing {0}..." -f $cfgPmph.FileName)
-        $wb3 = $excel.Workbooks.Open($cmphPath, $false, $false)
-        $ws3 = $wb3.Worksheets.Item($cfgPmph.Worksheet)
+        $wb3 = try { $excel.Workbooks.Open($cmphPath, $false, $false) } catch { $null }
+        if (-not $wb3) {
+            throw "Failed to open Excel workbook '$cmphPath'. The file may be corrupt, password-protected, or locked by another process."
+        }
+        $ws3 = try { $wb3.Worksheets.Item($cfgPmph.Worksheet) } catch { $null }
+        if (-not $ws3) {
+            $wb3.Close($false)
+            throw "Worksheet '$($cfgPmph.Worksheet)' was not found in '$cmphPath'."
+        }
 
         $charts3 = $ws3.ChartObjects()
         if ($charts3.Count -ge [math]::Max($cfgPmph.ChartIndex, $cfgCmph.ChartIndex)) {
@@ -930,9 +986,11 @@ try {
             if ($lastRowPmph -gt 0) {
                 $firstRowPmph = [math]::Max($cfgPmph.MinRow, $lastRowPmph - $cfgPmph.LookbackWeeks)
                 foreach ($s in $cObjPmph.Chart.SeriesCollection()) {
-                    $newFormula = [regex]::Replace($s.Formula, '(\$[A-Z]+\$)\d+:(\$[A-Z]+\$)\d+',
-                        { param($m) $m.Groups[1].Value + $firstRowPmph + ":" + $m.Groups[2].Value + $lastRowPmph })
-                    if ($newFormula -ne $s.Formula) { $s.Formula = $newFormula }
+                    if ($null -ne $s -and $null -ne $s.Formula) {
+                        $newFormula = [regex]::Replace($s.Formula, '(\$[A-Z]+\$)\d+:(\$[A-Z]+\$)\d+',
+                            { param($m) $m.Groups[1].Value + $firstRowPmph + ":" + $m.Groups[2].Value + $lastRowPmph })
+                        if ($newFormula -ne $s.Formula) { $s.Formula = $newFormula }
+                    }
                 }
             }
 
@@ -956,9 +1014,11 @@ try {
             if ($lastRowCmph -gt 0) {
                 $firstRowCmph = [math]::Max($cfgCmph.MinRow, $lastRowCmph - $cfgCmph.LookbackWeeks)
                 foreach ($s in $cObjCmph.Chart.SeriesCollection()) {
-                    $newFormula = [regex]::Replace($s.Formula, '(\$[A-Z]+\$)\d+:(\$[A-Z]+\$)\d+',
-                        { param($m) $m.Groups[1].Value + $firstRowCmph + ":" + $m.Groups[2].Value + $lastRowCmph })
-                    if ($newFormula -ne $s.Formula) { $s.Formula = $newFormula }
+                    if ($null -ne $s -and $null -ne $s.Formula) {
+                        $newFormula = [regex]::Replace($s.Formula, '(\$[A-Z]+\$)\d+:(\$[A-Z]+\$)\d+',
+                            { param($m) $m.Groups[1].Value + $firstRowCmph + ":" + $m.Groups[2].Value + $lastRowCmph })
+                        if ($newFormula -ne $s.Formula) { $s.Formula = $newFormula }
+                    }
                 }
             }
 
@@ -985,13 +1045,28 @@ try {
         # --- File 4: Equipment PERFORMANCE V1.2 Weekly data.xlsx ---
         $cfgAct = $script:GraphConfig["Slide5_Actual"]
         $cfgFc  = $script:GraphConfig["Slide6_Forecast"]
+        if (-not $cfgAct) { throw "Configuration 'Slide5_Actual' is missing in `$script:GraphConfig." }
+        if (-not $cfgFc)  { throw "Configuration 'Slide6_Forecast' is missing in `$script:GraphConfig." }
         $equipPath = $script:ResolvedExcelPaths[$cfgAct.FileName]
         if (-not $equipPath) { $equipPath = Join-Path $workingRoot $cfgAct.FileName }
+        if ($equipPath -match '^https?://') {
+            throw "Failed to process '$($cfgAct.FileName)': File is a SharePoint URL ($equipPath) and was not downloaded locally. Please verify Tenant ID, credentials, or App Registration permissions for the target tenant."
+        }
+        if (-not (Test-Path $equipPath -PathType Leaf)) {
+            throw "Excel file '$($cfgAct.FileName)' not found at '$equipPath'."
+        }
         Write-LogOk ("Processing {0}..." -f $cfgAct.FileName)
-        $wb4 = $excel.Workbooks.Open($equipPath, $false, $true)
+        $wb4 = try { $excel.Workbooks.Open($equipPath, $false, $true) } catch { $null }
+        if (-not $wb4) {
+            throw "Failed to open Excel workbook '$equipPath'. The file may be corrupt, password-protected, or locked by another process."
+        }
 
         # SLIDE 5: Weekly SMT sheet - screenshot Equipment Technical Availability section
-        $ws4_smt = $wb4.Worksheets.Item($cfgAct.Worksheet)
+        $ws4_smt = try { $wb4.Worksheets.Item($cfgAct.Worksheet) } catch { $null }
+        if (-not $ws4_smt) {
+            $wb4.Close($false)
+            throw "Worksheet '$($cfgAct.Worksheet)' was not found in '$equipPath'."
+        }
         $png5_actual = Join-Path $workingRoot "slide5_actual.png"
         Export-RangePicture $ws4_smt $cfgAct.StartRow $cfgAct.StartCol $cfgAct.EndRow $cfgAct.EndCol $png5_actual
         if (Test-ValidImageFile $png5_actual) {
@@ -1002,7 +1077,11 @@ try {
         }
 
         # SLIDE 6: MnR Forecast sheet - 3 separate table stitched CopyPicture screenshots
-        $ws4_mnr = $wb4.Worksheets.Item($cfgFc.Worksheet)
+        $ws4_mnr = try { $wb4.Worksheets.Item($cfgFc.Worksheet) } catch { $null }
+        if (-not $ws4_mnr) {
+            $wb4.Close($false)
+            throw "Worksheet '$($cfgFc.Worksheet)' was not found in '$equipPath'."
+        }
         $ws4_mnr.Activate()
         Start-Sleep -Milliseconds 300
 
