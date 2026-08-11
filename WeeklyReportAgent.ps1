@@ -1355,6 +1355,15 @@ try {
     }
     finally {
         if ($null -ne $excel) {
+            try { $excel.DisplayAlerts = $false } catch {}
+            try { $excel.Visible = $false } catch {}
+            try {
+                if ($null -ne $excel.Workbooks) {
+                    foreach ($wb in $excel.Workbooks) {
+                        try { $wb.Close($false) } catch {}
+                    }
+                }
+            } catch {}
             try { $excel.Quit() } catch {}
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel) | Out-Null
             $excel = $null
@@ -1471,6 +1480,7 @@ try {
             $pres = $null
         }
         if ($null -ne $ppt) {
+            try { $ppt.Visible = $msoFalse } catch {}
             try { $ppt.Quit() } catch {}
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($ppt) | Out-Null
             $ppt = $null
