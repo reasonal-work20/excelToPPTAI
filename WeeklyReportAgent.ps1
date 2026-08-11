@@ -122,25 +122,65 @@ function Write-LogHeader([string]$text) {
     Write-Host ("=== {0} ===" -f $text)
 }
 
+function Redact-SensitiveText([string]$text) {
+    if ([string]::IsNullOrWhiteSpace($text)) { return "" }
+    if (-not [string]::IsNullOrWhiteSpace($SharePointPassword)) {
+        $text = $text.Replace($SharePointPassword, "********")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:WRA_SP_PASSWORD)) {
+        $text = $text.Replace($env:WRA_SP_PASSWORD, "********")
+    }
+    return $text
+}
+
 function Write-LogStep([string]$stepText) {
     if ($stepText -match '\[(\d+)/(\d+)\]\s*(.*)') {
         $script:CurrentStepNum = [int]$Matches[1]
         $script:TotalStepsNum  = [int]$Matches[2]
         $stepText = $Matches[3]
     }
+    $stepText = Redact-SensitiveText $stepText
     Write-Host ("[STEP {0}/{1}]: {2}" -f $script:CurrentStepNum, $script:TotalStepsNum, $stepText)
 }
 
 function Write-LogOk([string]$text) {
+    $text = Redact-SensitiveText $text
     Write-Host ("[STEP {0}/{1}]: {2}" -f $script:CurrentStepNum, $script:TotalStepsNum, $text)
 }
 
 function Write-LogWarn([string]$text) {
+    $text = Redact-SensitiveText $text
     Write-Host ("[STEP {0}/{1}]: WARN - {2}" -f $script:CurrentStepNum, $script:TotalStepsNum, $text)
 }
 
 function Write-LogError([string]$text) {
+    $text = Redact-SensitiveText $text
     Write-Host ("[STEP {0}/{1}]: ERROR - {2}" -f $script:CurrentStepNum, $script:TotalStepsNum, $text)
+}
+
+function Invoke-SafeComAction([scriptblock]$action, [int]$maxRetries = 5, [int]$delayMs = 400) {
+    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
+        try {
+            & $action
+            return
+        } catch [System.Runtime.InteropServices.COMException] {
+            if ($attempt -lt $maxRetries) {
+                Start-Sleep -Milliseconds $delayMs
+            }
+        } catch {
+            return
+        }
+    }
+}
+
+function Close-WorkbookSafely($wb) {
+    if ($null -eq $wb) { return }
+    Invoke-SafeComAction { $wb.Close($false) }
+}
+
+function Save-WorkbookSafely($wb) {
+    if ($null -eq $wb) { return }
+    Invoke-SafeComAction { $wb.Save() }
 }
 
 function Get-IsoWeek([datetime]$d) {
@@ -832,6 +872,9 @@ function Get-CleanInputUrl([string]$raw) {
 # --- Main Execution Flow -----------------------------------------------------
 
 try {
+    if (-not $SharePointPassword -and $env:WRA_SP_PASSWORD) {
+        $SharePointPassword = $env:WRA_SP_PASSWORD
+    }
     if ($Week -eq -1) { $Week = Get-IsoWeek (Get-Date) }
 
     $scriptExecutionDir = if (-not [string]::IsNullOrWhiteSpace($Root) -and (Test-Path -Path $Root -ErrorAction SilentlyContinue)) { $Root } elseif ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
@@ -983,7 +1026,7 @@ try {
         }
         $ws1 = try { $wb1.Worksheets.Item($cfgLti.Worksheet) } catch { $null }
         if (-not $ws1) {
-            $wb1.Close($false)
+            Close-WorkbookSafely $wb1
             throw "Worksheet '$($cfgLti.Worksheet)' was not found in '$ltiPath'."
         }
 
@@ -1005,7 +1048,7 @@ try {
                         if ($newFormula -ne $s.Formula) { $s.Formula = $newFormula }
                     }
                 }
-                $wb1.Save()
+                Save-WorkbookSafely $wb1
                 $png1 = Join-Path $workingRoot "slide2_lti.png"
                 Export-ChartHd $cObj1 $png1 $cfgLti.Width $cfgLti.Height
                 if (Test-ValidImageFile $png1) {
@@ -1016,7 +1059,7 @@ try {
                 }
             }
         }
-        $wb1.Close($false)
+        Close-WorkbookSafely $wb1
 
         # --- File 2: Actual & Forecast Moves data.xlsx ---
         $cfgMoves = $script:GraphConfig["Slide3_Moves"]
@@ -1038,7 +1081,7 @@ try {
         }
         $ws2 = try { $wb2.Worksheets.Item($cfgMoves.Worksheet) } catch { $null }
         if (-not $ws2) {
-            $wb2.Close($false)
+            Close-WorkbookSafely $wb2
             throw "Worksheet '$($cfgMoves.Worksheet)' was not found in '$movesPath'."
         }
 
@@ -1060,7 +1103,7 @@ try {
                         if ($newFormula -ne $s.Formula) { $s.Formula = $newFormula }
                     }
                 }
-                $wb2.Save()
+                Save-WorkbookSafely $wb2
                 $png2 = Join-Path $workingRoot "slide3_moves.png"
                 Export-ChartHd $cObj2 $png2 $cfgMoves.Width $cfgMoves.Height
                 if (Test-ValidImageFile $png2) {
@@ -1071,7 +1114,7 @@ try {
                 }
             }
         }
-        $wb2.Close($false)
+        Close-WorkbookSafely $wb2
 
         # --- File 3: CMPH and PMPH actual and forecast data.xlsx ---
         $cfgPmph = $script:GraphConfig["Slide4_PMPH"]
@@ -1095,7 +1138,7 @@ try {
         }
         $ws3 = try { $wb3.Worksheets.Item($cfgPmph.Worksheet) } catch { $null }
         if (-not $ws3) {
-            $wb3.Close($false)
+            Close-WorkbookSafely $wb3
             throw "Worksheet '$($cfgPmph.Worksheet)' was not found in '$cmphPath'."
         }
 
@@ -1161,7 +1204,7 @@ try {
             }
 
             if ($lastRowPmph -gt 0 -or $lastRowCmph -gt 0) {
-                $wb3.Save()
+                Save-WorkbookSafely $wb3
             }
 
             $png4_pmph = Join-Path $workingRoot "slide4_pmph.png"
@@ -1178,7 +1221,7 @@ try {
                 Write-LogWarn ("Slide #4 PMPH or CMPH Chart export failed or created invalid PNG")
             }
         }
-        $wb3.Close($false)
+        Close-WorkbookSafely $wb3
 
         # --- File 4: Equipment PERFORMANCE V1.2 Weekly data.xlsx ---
         $cfgAct = $script:GraphConfig["Slide5_Actual"]
@@ -1204,7 +1247,7 @@ try {
         # SLIDE 5: Weekly SMT sheet - screenshot Equipment Technical Availability section
         $ws4_smt = try { $wb4.Worksheets.Item($cfgAct.Worksheet) } catch { $null }
         if (-not $ws4_smt) {
-            $wb4.Close($false)
+            Close-WorkbookSafely $wb4
             throw "Worksheet '$($cfgAct.Worksheet)' was not found in '$equipPath'."
         }
         $png5_actual = Join-Path $workingRoot "slide5_actual.png"
@@ -1219,7 +1262,7 @@ try {
         # SLIDE 6: MnR Forecast sheet - 3 separate table stitched CopyPicture screenshots
         $ws4_mnr = try { $wb4.Worksheets.Item($cfgFc.Worksheet) } catch { $null }
         if (-not $ws4_mnr) {
-            $wb4.Close($false)
+            Close-WorkbookSafely $wb4
             throw "Worksheet '$($cfgFc.Worksheet)' was not found in '$equipPath'."
         }
         $ws4_mnr.Activate()
@@ -1242,7 +1285,7 @@ try {
             Write-LogWarn "Slide #6 one or more MnR Forecast table exports failed"
         }
 
-        $wb4.Close($false)
+        Close-WorkbookSafely $wb4
 
     }
     finally {

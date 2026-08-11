@@ -432,8 +432,9 @@ $btnRun.Add_Click({
                 $argList += (Format-PsArg $txtEmail.Text)
             }
             if ($txtPass.Text) {
-                $argList += "-SharePointPassword"
-                $argList += (Format-PsArg $txtPass.Text)
+                $env:WRA_SP_PASSWORD = $txtPass.Text
+            } else {
+                $env:WRA_SP_PASSWORD = ""
             }
             if ($config.ClientId) {
                 $argList += "-ClientId"
@@ -467,6 +468,9 @@ $btnRun.Add_Click({
             $psi.FileName = "cmd.exe"
             $psi.Arguments = $cmdArgs
             $psi.UseShellExecute = $false
+            if ($txtPass.Text) {
+                $psi.EnvironmentVariables["WRA_SP_PASSWORD"] = $txtPass.Text
+            }
             $psi.CreateNoWindow = $false   # Keep a desktop window handle so Office SSO can authenticate
             $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Minimized
 
