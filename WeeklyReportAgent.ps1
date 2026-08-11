@@ -183,6 +183,72 @@ function Save-WorkbookSafely($wb) {
     Invoke-SafeComAction { $wb.Save() }
 }
 
+function Open-ExcelWorkbookSafely($excel, [string]$filePath, [bool]$readOnly = $false) {
+    if (-not $excel -or [string]::IsNullOrWhiteSpace($filePath)) { return $null }
+
+    $isUrl = $filePath -match '^https?://'
+    if ($isUrl) {
+        try { $excel.DisplayAlerts = $true } catch {}
+        try { $excel.Visible = $true } catch {}
+    }
+
+    $wb = try { $excel.Workbooks.Open($filePath, $false, $readOnly) } catch { $null }
+
+    # Unprotect Protected View windows (common on client machines opening web/SharePoint URLs)
+    try {
+        if (-not $wb -and $null -ne $excel.ProtectedViewWindows -and $excel.ProtectedViewWindows.Count -gt 0) {
+            foreach ($pvWin in $excel.ProtectedViewWindows) {
+                if ($null -ne $pvWin) {
+                    $wb = try { $pvWin.Edit() } catch { $null }
+                    if ($null -ne $wb) { break }
+                }
+            }
+        }
+    } catch {}
+
+    try { $excel.DisplayAlerts = $false } catch {}
+    return $wb
+}
+
+function Get-ExcelWorksheetSafely($wb, $sheetTarget) {
+    if ($null -eq $wb) { return $null }
+
+    if ($null -eq $sheetTarget -or "$sheetTarget" -eq "") { $sheetTarget = 1 }
+
+    if ("$sheetTarget" -match '^\d+$') {
+        $idx = [int]$sheetTarget
+        try {
+            $ws = $wb.Worksheets.Item($idx)
+            if ($null -ne $ws) { return $ws }
+        } catch {}
+        try {
+            $ws = $wb.Sheets.Item($idx)
+            if ($null -ne $ws) { return $ws }
+        } catch {}
+    }
+
+    $name = [string]$sheetTarget
+    try {
+        $ws = $wb.Worksheets.Item($name)
+        if ($null -ne $ws) { return $ws }
+    } catch {}
+    try {
+        $ws = $wb.Sheets.Item($name)
+        if ($null -ne $ws) { return $ws }
+    } catch {}
+
+    try {
+        $ws = $wb.Worksheets.Item(1)
+        if ($null -ne $ws) { return $ws }
+    } catch {}
+    try {
+        $ws = $wb.Sheets.Item(1)
+        if ($null -ne $ws) { return $ws }
+    } catch {}
+
+    return $null
+}
+
 function Get-IsoWeek([datetime]$d) {
     $day = [int]$d.DayOfWeek
     if ($day -eq 0) { $day = 7 }
@@ -1019,12 +1085,11 @@ try {
             throw "Excel file '$($cfgLti.FileName)' not found at local path '$ltiPath'."
         }
         Write-LogOk ("Processing {0}..." -f $cfgLti.FileName)
-        $wb1 = try { $excel.Workbooks.Open($ltiPath, $false, $false) } catch { $null }
-        try { $excel.DisplayAlerts = $false } catch {}
+        $wb1 = Open-ExcelWorkbookSafely $excel $ltiPath $false
         if (-not $wb1) {
             throw "Failed to open Excel workbook '$ltiPath'. If accessing a SharePoint URL, please ensure Excel is signed into your M365 account, or download the required Excel file locally."
         }
-        $ws1 = try { $wb1.Worksheets.Item($cfgLti.Worksheet) } catch { $null }
+        $ws1 = Get-ExcelWorksheetSafely $wb1 $cfgLti.Worksheet
         if (-not $ws1) {
             Close-WorkbookSafely $wb1
             throw "Worksheet '$($cfgLti.Worksheet)' was not found in '$ltiPath'."
@@ -1074,12 +1139,11 @@ try {
             throw "Excel file '$($cfgMoves.FileName)' not found at local path '$movesPath'."
         }
         Write-LogOk ("Processing {0}..." -f $cfgMoves.FileName)
-        $wb2 = try { $excel.Workbooks.Open($movesPath, $false, $false) } catch { $null }
-        try { $excel.DisplayAlerts = $false } catch {}
+        $wb2 = Open-ExcelWorkbookSafely $excel $movesPath $false
         if (-not $wb2) {
             throw "Failed to open Excel workbook '$movesPath'. If accessing a SharePoint URL, please ensure Excel is signed into your M365 account, or download the required Excel file locally."
         }
-        $ws2 = try { $wb2.Worksheets.Item($cfgMoves.Worksheet) } catch { $null }
+        $ws2 = Get-ExcelWorksheetSafely $wb2 $cfgMoves.Worksheet
         if (-not $ws2) {
             Close-WorkbookSafely $wb2
             throw "Worksheet '$($cfgMoves.Worksheet)' was not found in '$movesPath'."
@@ -1131,12 +1195,11 @@ try {
             throw "Excel file '$($cfgPmph.FileName)' not found at local path '$cmphPath'."
         }
         Write-LogOk ("Processing {0}..." -f $cfgPmph.FileName)
-        $wb3 = try { $excel.Workbooks.Open($cmphPath, $false, $false) } catch { $null }
-        try { $excel.DisplayAlerts = $false } catch {}
+        $wb3 = Open-ExcelWorkbookSafely $excel $cmphPath $false
         if (-not $wb3) {
             throw "Failed to open Excel workbook '$cmphPath'. If accessing a SharePoint URL, please ensure Excel is signed into your M365 account, or download the required Excel file locally."
         }
-        $ws3 = try { $wb3.Worksheets.Item($cfgPmph.Worksheet) } catch { $null }
+        $ws3 = Get-ExcelWorksheetSafely $wb3 $cfgPmph.Worksheet
         if (-not $ws3) {
             Close-WorkbookSafely $wb3
             throw "Worksheet '$($cfgPmph.Worksheet)' was not found in '$cmphPath'."
@@ -1238,14 +1301,14 @@ try {
             throw "Excel file '$($cfgAct.FileName)' not found at local path '$equipPath'."
         }
         Write-LogOk ("Processing {0}..." -f $cfgAct.FileName)
-        $wb4 = try { $excel.Workbooks.Open($equipPath, $false, $true) } catch { $null }
+        $wb4 = Open-ExcelWorkbookSafely $excel $equipPath $true
         try { $excel.DisplayAlerts = $false } catch {}
         if (-not $wb4) {
             throw "Failed to open Excel workbook '$equipPath'. If accessing a SharePoint URL, please ensure Excel is signed into your M365 account, or download the required Excel file locally."
         }
 
         # SLIDE 5: Weekly SMT sheet - screenshot Equipment Technical Availability section
-        $ws4_smt = try { $wb4.Worksheets.Item($cfgAct.Worksheet) } catch { $null }
+        $ws4_smt = Get-ExcelWorksheetSafely $wb4 $cfgAct.Worksheet
         if (-not $ws4_smt) {
             Close-WorkbookSafely $wb4
             throw "Worksheet '$($cfgAct.Worksheet)' was not found in '$equipPath'."
@@ -1260,7 +1323,7 @@ try {
         }
 
         # SLIDE 6: MnR Forecast sheet - 3 separate table stitched CopyPicture screenshots
-        $ws4_mnr = try { $wb4.Worksheets.Item($cfgFc.Worksheet) } catch { $null }
+        $ws4_mnr = Get-ExcelWorksheetSafely $wb4 $cfgFc.Worksheet
         if (-not $ws4_mnr) {
             Close-WorkbookSafely $wb4
             throw "Worksheet '$($cfgFc.Worksheet)' was not found in '$equipPath'."
