@@ -217,7 +217,7 @@ function Get-GraphAccessTokenFromCert([string]$clientId, [string]$tenantId, [str
 }
 
 # --- PnP PowerShell & Interactive MFA Authentication Helpers ------------------
-function Get-PnPSharePointFile([string]$urlToFetch, [string]$destPath, [string]$tenantId, [string]$clientId) {
+function Get-PnPSharePointFile([string]$urlToFetch, [string]$destPath, [string]$email, [string]$password) {
     if (-not (Get-Command Connect-PnPOnline -ErrorAction SilentlyContinue)) {
         return $false
     }
@@ -229,13 +229,24 @@ function Get-PnPSharePointFile([string]$urlToFetch, [string]$destPath, [string]$
             $siteUrl = "$siteUrl/$($pathSegments[0])/$($pathSegments[1])"
         }
 
-        Write-LogStep ("Authenticating with SharePoint via PnP PowerShell (MFA Interactive)...")
-        $pnpParams = @{ Url = $siteUrl; Interactive = $true }
-        if (-not [string]::IsNullOrWhiteSpace($tenantId)) { $pnpParams["Tenant"] = $tenantId }
-        if (-not [string]::IsNullOrWhiteSpace($clientId)) { $pnpParams["ClientId"] = $clientId }
-
-        Connect-PnPOnline @pnpParams -ErrorAction Stop
-        Write-LogOk "PnP PowerShell interactive authentication successful!"
+        Write-LogStep ("Authenticating with SharePoint via PnP PowerShell...")
+        if (-not [string]::IsNullOrWhiteSpace($email) -and -not [string]::IsNullOrWhiteSpace($password)) {
+            Write-LogStep ("Connecting PnP using email credentials ({0})..." -f $email)
+            $secPass = ConvertTo-SecureString $password -AsPlainText -Force
+            $cred = New-Object System.Management.Automation.PSCredential($email, $secPass)
+            Connect-PnPOnline -Url $siteUrl -Credentials $cred -ErrorAction Stop
+            Write-LogOk ("PnP PowerShell connected with credentials for {0}!" -f $email)
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($email)) {
+            Write-LogStep ("Connecting PnP using email ({0})..." -f $email)
+            Connect-PnPOnline -Url $siteUrl -Credentials $email -ErrorAction Stop
+            Write-LogOk ("PnP PowerShell connected with email {0}!" -f $email)
+        }
+        else {
+            Write-LogStep "Connecting PnP via interactive authentication..."
+            Connect-PnPOnline -Url $siteUrl -Interactive -ErrorAction Stop
+            Write-LogOk "PnP PowerShell interactive login successful!"
+        }
 
         $serverRelativeUrl = $uri.AbsolutePath
         $targetFolder = Split-Path $destPath -Parent
@@ -857,9 +868,9 @@ try {
 
             $downloaded = $false
 
-            # Strategy 1: PnP PowerShell (Connect-PnPOnline -Interactive for MFA)
+            # Strategy 1: PnP PowerShell (Connect-PnPOnline with Email/Password or Interactive)
             if ($UsePnP -or (Get-Command Connect-PnPOnline -ErrorAction SilentlyContinue)) {
-                $downloaded = Get-PnPSharePointFile -urlToFetch $urlToFetch -destPath $destPath -tenantId $TenantId -clientId $ClientId
+                $downloaded = Get-PnPSharePointFile -urlToFetch $urlToFetch -destPath $destPath -email $SharePointEmail -password $SharePointPassword
                 if ($downloaded) {
                     $script:ResolvedExcelPaths[$reqFile] = $destPath
                 }

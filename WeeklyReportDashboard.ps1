@@ -427,9 +427,13 @@ $btnRun.Add_Click({
                 $argList += "-OutputDir"
                 $argList += (Format-PsArg $txtOut.Text)
             }
-            if ($config.SharePointEmail) {
+            if ($txtEmail.Text) {
                 $argList += "-SharePointEmail"
-                $argList += (Format-PsArg $config.SharePointEmail)
+                $argList += (Format-PsArg $txtEmail.Text)
+            }
+            if ($txtPass.Text) {
+                $argList += "-SharePointPassword"
+                $argList += (Format-PsArg $txtPass.Text)
             }
             if ($config.ClientId) {
                 $argList += "-ClientId"
