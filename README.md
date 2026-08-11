@@ -46,12 +46,12 @@ Automates the weekly executive PowerPoint report from Excel data in **5 fully au
 
 The agent enforces a **hard-stop 4-Excel check** before processing. All four files must be resolvable — either as a local `.xlsx` file path or a SharePoint HTTPS URL — or the agent halts immediately.
 
-| #   | Required Filename                             | Target Slide / Purpose                                  |
-| --- | --------------------------------------------- | ------------------------------------------------------- |
-| 1   | `Actual & Forecast Moves data.xlsx`           | Slide 3 — Commercial Moves Chart                        |
-| 2   | `CMPH and PMPH actual and forecast data.xlsx` | Slide 4 — Operations PMPH & CMPH Charts                 |
-| 3   | `Equipment PERFORMANCE V1.2 Weekly data.xlsx` | Slide 5 & Slide 6 — Technical Availability Tables      |
-| 4   | `LTI PER TEU data.xlsx`                       | Slide 2 — Safety LTI PER TEU Chart                      |
+| #   | Required Filename                             | Target Slide / Purpose                            |
+| --- | --------------------------------------------- | ------------------------------------------------- |
+| 1   | `Actual & Forecast Moves data.xlsx`           | Slide 3 — Commercial Moves Chart                  |
+| 2   | `CMPH and PMPH actual and forecast data.xlsx` | Slide 4 — Operations PMPH & CMPH Charts           |
+| 3   | `Equipment PERFORMANCE V1.2 Weekly data.xlsx` | Slide 5 & Slide 6 — Technical Availability Tables |
+| 4   | `LTI PER TEU data.xlsx`                       | Slide 2 — Safety LTI PER TEU Chart                |
 
 > **Hard Stop:** If any of the 4 required files cannot be resolved, the agent logs an explicit error message and halts execution.
 
@@ -66,6 +66,7 @@ The executive dashboard ([`WeeklyReportDashboard.ps1`](file:///c:/Users/User/exc
 Paste a **SharePoint HTTPS URL** (e.g. `https://tenant.sharepoint.com/sites/.../file.xlsx`) or a **local file path** for each of the 4 required Excel files. Use the **Browse…** button to pick a local file.
 
 The fifth row is the **PowerPoint Template** field:
+
 - **Leave blank** — auto-resolves the highest-numbered `Weekly Report Week XX.pptx` file in the script folder.
 - **Local `.pptx` path** — browse to any local PowerPoint file to use as the template.
 - **SharePoint HTTPS URL** — paste a direct link to a `.pptx` in SharePoint; the agent downloads it via Office SSO before processing.
@@ -102,21 +103,27 @@ main.bat
 ```
 
 ### Step 1: Input Resolution & 4-Excel Validation
+
 Clean quotes and resolves all 4 Excel URLs/paths and PowerPoint template. Resolves SharePoint URLs via Office SSO or Windows Integrated Auth. Enforces hard-stop check.
 
 ### Step 2: Dynamic Table Row Scanning & Chart Series Formula Refresh
+
 For each workbook, the agent scans data columns backward from `MaxScanRow` down to `MinRow` to find the last row `$lastRow` containing non-empty weekly data. It calculates `$firstRow = [math]::Max($minRow, $lastRow - $lookback)` and regex-updates series formulas:
 `=SERIES("Series", Sheet1!$B$4:$B$15, Sheet1!$C$4:$C$15, 1)` ➔ `=SERIES("Series", Sheet1!$B$4:$B$16, Sheet1!$C$4:$C$16, 1)`
 When users expand Excel tables by adding new row data for new weeks, the graph view window automatically slides down to capture the updated range.
 
 ### Step 3: Image Export & Validation Polling (`Test-ValidImageFile`)
+
 Charts and stitched cell ranges are exported into an isolated process working directory (`$workingRoot = %TEMP%\wra_input_<guid>`). Every PNG image is validated for existence, file size (> 1 KB), and GDI+ read capability with a 3-second polling loop before PowerPoint COM touches it.
 
 ### Step 4: PowerPoint Shape Replacement & Package Flushing
+
 Opens the PowerPoint template via PowerPoint COM. Locates slide pictures, records bounds/Z-order, inserts the new PNG via `AddPicture($path, 0, -1, ...)` (`LinkToFile = 0`, `SaveWithDocument = -1`), deletes the old shape, updates the date string on Slide 1 (`dd-MMM-yyyy`), and calls `$pres.Save()` to flush all image streams (`ppt/media/imageX.png`) into the PPTX package archive.
 
 ### Step 5: Multi-Tiered Publication Pipeline
+
 Attempts publication across 5 fallback channels:
+
 1. **PowerPoint COM `SaveAs`**: Direct push over Office SSO. Includes 60-second upload stream timeout with 10-second status logging for slow internet connections.
 2. **PowerPoint COM `SaveCopyAs`**: Secondary COM upload channel.
 3. **OneDrive / SharePoint Synced Local Directory Auto-Detection**: Searches local OneDrive business folders (`C:\Users\User\OneDrive - SRKK Group 1`, `C:\Users\User\SharePoint`) for directories matching the target SharePoint folder name and copies the report directly into the synced folder for instant background cloud sync.
@@ -132,13 +139,13 @@ Excel chart object indices, worksheet names, cell range boundaries, column scan 
 
 ### Slide-to-Excel Central Mapping Table
 
-| Slide # | Target Topic / Slide | Source Excel File | Sheet Name / Index | Target Object / Cell Scope Rules |
-| :--- | :--- | :--- | :--- | :--- |
-| **Slide 2** | Safety LTI PER TEU YTD | `LTI PER TEU data.xlsx` | `1` (Sheet1) | Chart 1 (Scanned Col F / Col 6, Rows 4–56, 12-week window) |
-| **Slide 3** | Commercial Moves | `Actual & Forecast Moves data.xlsx` | `1` (Sheet1) | Chart 1 (Scanned Col D / Col 4, Rows 5–56, 16-week window) |
-| **Slide 4** | Operations PMPH & CMPH | `CMPH and PMPH actual and forecast data.xlsx` | `1` (Sheet1) | Chart 1 (PMPH) & Chart 2 (CMPH) (Scanned Col D / Col 4, Rows 4–56, 12-week window) |
-| **Slide 5** | Tech Availability (Actual) | `Equipment PERFORMANCE V1.2 Weekly data.xlsx` | `"Weekly SMT"` | Cell Range `U39:AK55` (StartRow 39, StartCol 21, EndRow 55, EndCol 37) |
-| **Slide 6** | Tech Availability (Forecast) | `Equipment PERFORMANCE V1.2 Weekly data.xlsx` | `"MnR Forecast"` | Stitched Range Tables: QC (R4-5, R11-17), RTG (R21-22, R28-34), PM (R38-39, R45-55), MaxCol 30 |
+| Slide #     | Target Topic / Slide         | Source Excel File                             | Sheet Name / Index | Target Object / Cell Scope Rules                                                               |
+| :---------- | :--------------------------- | :-------------------------------------------- | :----------------- | :--------------------------------------------------------------------------------------------- |
+| **Slide 2** | Safety LTI PER TEU YTD       | `LTI PER TEU data.xlsx`                       | `1` (Sheet1)       | Chart 1 (Scanned Col F / Col 6, Rows 4–56, 12-week window)                                     |
+| **Slide 3** | Commercial Moves             | `Actual & Forecast Moves data.xlsx`           | `1` (Sheet1)       | Chart 1 (Scanned Col D / Col 4, Rows 5–56, 16-week window)                                     |
+| **Slide 4** | Operations PMPH & CMPH       | `CMPH and PMPH actual and forecast data.xlsx` | `1` (Sheet1)       | Chart 1 (PMPH) & Chart 2 (CMPH) (Scanned Col D / Col 4, Rows 4–56, 12-week window)             |
+| **Slide 5** | Tech Availability (Actual)   | `Equipment PERFORMANCE V1.2 Weekly data.xlsx` | `"Weekly SMT"`     | Cell Range `U39:AK55` (StartRow 39, StartCol 21, EndRow 55, EndCol 37)                         |
+| **Slide 6** | Tech Availability (Forecast) | `Equipment PERFORMANCE V1.2 Weekly data.xlsx` | `"MnR Forecast"`   | Stitched Range Tables: QC (R4-5, R11-17), RTG (R21-22, R28-34), PM (R38-39, R45-55), MaxCol 30 |
 
 ---
 
@@ -225,29 +232,29 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File ".\WeeklyReportAgen
 
 ### Full Agent Parameter Reference
 
-| Parameter | Type | Description |
-| :--- | :--- | :--- |
-| `-Week` | `int` | Target week number. Defaults to current ISO week (`-1` = auto). |
-| `-MovesDataUrl` | `string` | Local path or SharePoint URL for `Actual & Forecast Moves data.xlsx`. |
-| `-CmphDataUrl` | `string` | Local path or SharePoint URL for `CMPH and PMPH actual and forecast data.xlsx`. |
+| Parameter           | Type     | Description                                                                     |
+| :------------------ | :------- | :------------------------------------------------------------------------------ |
+| `-Week`             | `int`    | Target week number. Defaults to current ISO week (`-1` = auto).                 |
+| `-MovesDataUrl`     | `string` | Local path or SharePoint URL for `Actual & Forecast Moves data.xlsx`.           |
+| `-CmphDataUrl`      | `string` | Local path or SharePoint URL for `CMPH and PMPH actual and forecast data.xlsx`. |
 | `-EquipmentDataUrl` | `string` | Local path or SharePoint URL for `Equipment PERFORMANCE V1.2 Weekly data.xlsx`. |
-| `-LtiDataUrl` | `string` | Local path or SharePoint URL for `LTI PER TEU data.xlsx`. |
-| `-TemplatePath` | `string` | Local `.pptx` path or SharePoint URL for PowerPoint template. |
-| `-OutputDir` | `string` | Local directory path or SharePoint library URL for the output deck. |
-| `-SharePointEmail` | `string` | Microsoft 365 email address. |
-| `-NoDateUpdate` | `switch` | Skip updating the title slide date. |
+| `-LtiDataUrl`       | `string` | Local path or SharePoint URL for `LTI PER TEU data.xlsx`.                       |
+| `-TemplatePath`     | `string` | Local `.pptx` path or SharePoint URL for PowerPoint template.                   |
+| `-OutputDir`        | `string` | Local directory path or SharePoint library URL for the output deck.             |
+| `-SharePointEmail`  | `string` | Microsoft 365 email address.                                                    |
+| `-NoDateUpdate`     | `switch` | Skip updating the title slide date.                                             |
 
 ---
 
 ## Troubleshooting & Best Practices
 
-| Symptom | Likely Cause | Resolution |
-| :--- | :--- | :--- |
-| `Missing required Excel file(s)` | File missing or inaccessible URL | Verify local path or check SharePoint access in browser. |
-| `Mandatory PowerPoint template file not found` | No `.pptx` template in script directory | Place `Weekly Report Week XX.pptx` in the script directory or set `-TemplatePath`. |
-| `This picture cannot currently be displayed` | Stale or un-flushed image stream | Resolved via GDI+ validation polling (`Test-ValidImageFile`) & `$pres.Save()` package flushing. |
-| `Direct SharePoint cloud upload unavailable` | Tenant MFA or unauthenticated Office session | Script automatically publishes report locally to output folder and `output-fallback\`. |
-| `You cannot call a method on a null-valued expression` | Missing `-STA` flag | Always include `-STA` when launching PowerShell COM scripts. |
+| Symptom                                                | Likely Cause                                 | Resolution                                                                                      |
+| :----------------------------------------------------- | :------------------------------------------- | :---------------------------------------------------------------------------------------------- |
+| `Missing required Excel file(s)`                       | File missing or inaccessible URL             | Verify local path or check SharePoint access in browser.                                        |
+| `Mandatory PowerPoint template file not found`         | No `.pptx` template in script directory      | Place `Weekly Report Week XX.pptx` in the script directory or set `-TemplatePath`.              |
+| `This picture cannot currently be displayed`           | Stale or un-flushed image stream             | Resolved via GDI+ validation polling (`Test-ValidImageFile`) & `$pres.Save()` package flushing. |
+| `Direct SharePoint cloud upload unavailable`           | Tenant MFA or unauthenticated Office session | Script automatically publishes report locally to output folder and `output-fallback\`.          |
+| `You cannot call a method on a null-valued expression` | Missing `-STA` flag                          | Always include `-STA` when launching PowerShell COM scripts.                                    |
 
 ---
 
